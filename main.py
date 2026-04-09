@@ -1,5 +1,8 @@
-from playwright.sync_api import sync_playwright
+import re
 import time
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlunparse
+
+from playwright.sync_api import sync_playwright
 
 MAX_POSTS = 50
 # Set MAX_POSTS to None to scrape all posts that the feed can still load.
@@ -9,6 +12,209 @@ OUTPUT_FILE = "fb_posts_output.txt"
 STORAGE_STATE = "facebook_state.json"
 MAX_SCROLLS = 30  # Set MAX_SCROLLS to None for unlimited scrolling.
 MAX_STAGNANT_SCROLLS = 10  # Used when MAX_POSTS or MAX_SCROLLS is unlimited.
+
+POST_CARD_SELECTOR = "div[role='feed'] > div"
+MESSAGE_SELECTORS = [
+    "div[data-ad-preview='message']",
+    "div[data-ad-rendering-role='story_message']",
+]
+SEE_MORE_LABELS = [
+    "See more",
+    "Xem thêm",
+    "Meer weergeven",
+    "Ver más",
+    "Mostra altro",
+]
+
+
+def click_all(locator):
+    clicked = 0
+    for i in range(locator.count()):
+        try:
+            locator.nth(i).click(timeout=500)
+            clicked += 1
+        except Exception:
+            continue
+    return clicked
+
+
+def expand_visible_posts(page):
+    clicked = 0
+    for label in SEE_MORE_LABELS:
+        clicked += click_all(page.get_by_role("button", name=label, exact=True))
+        clicked += click_all(page.locator("div[role='button']", has_text=label))
+    return clicked
+
+
+def clean_message_text(text):
+    text = text.strip()
+    for label in SEE_MORE_LABELS:
+        text = re.sub(rf"\s*…\s*{re.escape(label)}\s*$", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def canonicalize_external_url(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    for key in list(query):
+        if key == "fbclid" or key.startswith("utm_"):
+            query.pop(key, None)
+
+    host = parsed.netloc.lower()
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"} and parsed.path == "/watch":
+        video_id = query.get("v", [None])[0]
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+
+    if host == "youtu.be":
+        video_id = parsed.path.lstrip("/")
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+
+    cleaned_query = urlencode(sorted(query.items()), doseq=True)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, cleaned_query, ""))
+
+
+def normalize_outbound_url(url):
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    if parsed.netloc.lower() in {"l.facebook.com", "lm.facebook.com"}:
+        target = parse_qs(parsed.query).get("u", [None])[0]
+        if not target:
+            return None
+        return normalize_outbound_url(unquote(target))
+
+    return canonicalize_external_url(url)
+
+
+def is_external_url(url):
+    if not url:
+        return False
+    host = urlparse(url).netloc.lower()
+    return bool(host) and not host.endswith("facebook.com") and not host.endswith("fbcdn.net")
+
+
+def youtube_url_from_thumbnail(src):
+    if not src:
+        return None
+
+    if "ytimg.com/vi/" in src:
+        video_id = src.split("ytimg.com/vi/", 1)[1].split("/", 1)[0]
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+
+    if "url=" in src and "ytimg.com%2Fvi%2F" in src:
+        encoded_url = parse_qs(urlparse(src).query).get("url", [""])[0]
+        decoded_url = unquote(encoded_url)
+        if "ytimg.com/vi/" in decoded_url:
+            video_id = decoded_url.split("ytimg.com/vi/", 1)[1].split("/", 1)[0]
+            if video_id:
+                return f"https://www.youtube.com/watch?v={video_id}"
+
+    return None
+
+
+def add_unique(items, value):
+    if value and value not in items:
+        items.append(value)
+
+
+def get_message_text(post_card):
+    parts = []
+    for selector in MESSAGE_SELECTORS:
+        messages = post_card.locator(selector)
+        for i in range(messages.count()):
+            text = clean_message_text(messages.nth(i).inner_text())
+            if text and text not in parts:
+                parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+def resolve_preview_url(page, preview_link):
+    popup = None
+    try:
+        preview_link.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
+
+    try:
+        with page.expect_popup(timeout=5000) as popup_info:
+            preview_link.click(timeout=3000)
+        popup = popup_info.value
+        popup.wait_for_load_state("domcontentloaded", timeout=15000)
+        popup.wait_for_timeout(1000)
+        return normalize_outbound_url(popup.url)
+    except Exception:
+        return None
+    finally:
+        if popup:
+            try:
+                popup.close()
+            except Exception:
+                pass
+
+
+def collect_external_urls(post_card, page, resolved_preview_urls):
+    urls = []
+
+    anchors = post_card.locator("a[href]")
+    for i in range(anchors.count()):
+        href = anchors.nth(i).get_attribute("href")
+        if not href:
+            continue
+        normalized = normalize_outbound_url(urljoin(page.url, href))
+        if is_external_url(normalized):
+            add_unique(urls, normalized)
+
+    images = post_card.locator("img[src]")
+    for i in range(images.count()):
+        derived = youtube_url_from_thumbnail(images.nth(i).get_attribute("src"))
+        if derived:
+            add_unique(urls, derived)
+
+    preview_links = post_card.locator("a[target='_blank'][aria-label]")
+    for i in range(min(preview_links.count(), 3)):
+        preview_link = preview_links.nth(i)
+        aria_label = preview_link.get_attribute("aria-label") or ""
+        raw_href = preview_link.get_attribute("href") or ""
+        cache_key = f"{aria_label}|{raw_href}"
+
+        cached_url = resolved_preview_urls.get(cache_key)
+        if cached_url:
+            add_unique(urls, cached_url)
+            continue
+
+        normalized = normalize_outbound_url(urljoin(page.url, raw_href)) if raw_href else None
+        if is_external_url(normalized):
+            resolved_preview_urls[cache_key] = normalized
+            add_unique(urls, normalized)
+            continue
+
+        resolved_url = resolve_preview_url(page, preview_link)
+        resolved_preview_urls[cache_key] = resolved_url
+        if is_external_url(resolved_url):
+            add_unique(urls, resolved_url)
+
+    return urls
+
+
+def extract_post_content(post_card, page, resolved_preview_urls):
+    message_text = get_message_text(post_card)
+    external_urls = collect_external_urls(post_card, page, resolved_preview_urls)
+
+    if not message_text and not external_urls:
+        return None
+
+    parts = []
+    if message_text:
+        parts.append(message_text)
+    if external_urls:
+        parts.append("\n".join(external_urls))
+
+    return "\n\n".join(parts).strip()
 
 
 def run_scraper():
@@ -24,7 +230,8 @@ def run_scraper():
         posts = []
         scrolls = 0
         stagnant_scrolls = 0
-        processed_posts = set()  # track processed posts by their text content
+        processed_posts = set()  # track processed posts by their content
+        resolved_preview_urls = {}
 
         # keep scrolling until we have MAX_POSTS or reach MAX_SCROLLS
         while (MAX_POSTS is None or len(posts) < MAX_POSTS) and (
@@ -40,35 +247,32 @@ def run_scraper():
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(2)  # wait a bit for new content
 
-            # click all "See more" buttons in the feed
-            more_buttons = page.locator("text='Xem thêm'")
-            for i in range(more_buttons.count()):
-                try:
-                    more_buttons.nth(i).click(timeout=500)
-                except:
-                    pass
-            time.sleep(1)
+            expanded = expand_visible_posts(page)
+            if expanded:
+                print(f"   ↳ Expanded {expanded} collapsed post sections")
+                time.sleep(1)
 
-            # find all story_message divs
-            elems = page.locator("div[data-ad-rendering-role='story_message']")
-            count = elems.count()
-            print(f"   → {count} elements found in DOM")
+            post_cards = page.locator(POST_CARD_SELECTOR)
+            count = post_cards.count()
+            print(f"   → {count} feed items found in DOM")
 
             new_posts_this_scroll = 0
 
-            # process all elements and check for new posts
+            # process all feed items and check for new posts
             for i in range(count):
                 try:
-                    text = elems.nth(i).inner_text().strip()
-                    if text and text not in processed_posts:
-                        posts.append(text)
-                        processed_posts.add(text)
+                    content = extract_post_content(
+                        post_cards.nth(i), page, resolved_preview_urls
+                    )
+                    if content and content not in processed_posts:
+                        posts.append(content)
+                        processed_posts.add(content)
                         new_posts_this_scroll += 1
                         print(f"   ✓ Post #{len(posts)} loaded")
                         if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
                             break
                 except Exception as e:
-                    print(f"   ⚠️ Error processing element {i}: {e}")
+                    print(f"   ⚠️ Error processing feed item {i}: {e}")
                     continue
 
             # When either limit is unlimited, stop after several empty scrolls
@@ -98,6 +302,7 @@ def run_scraper():
 
         browser.close()
         print(f"📁 Done! Check {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
     run_scraper()
