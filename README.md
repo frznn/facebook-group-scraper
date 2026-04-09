@@ -33,14 +33,16 @@ cd facebook-group-scraper
 
 2. **Install dependencies:**
 ```bash
-pip install -r requirements.txt
+pip install playwright
+playwright install
 ```
 
 3. **Configure your target group:**
    - Edit `main.py` and update `GROUP_URL` with your target Facebook group URL
    - Replace `YOUR_GROUP_ID_HERE` with the actual group ID from Facebook
    - Example: `"https://www.facebook.com/groups/123456789012345"`
-   - Set `DESIRED_POSTS` to the number of posts you want to extract
+   - Set `MAX_POSTS = None` to scrape all available posts
+   - Set `MAX_SCROLLS = None` to allow unlimited scrolling
 
 ## 🚀 Usage
 
@@ -75,9 +77,10 @@ python main.py
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DESIRED_POSTS` | Number of posts to extract | 50 |
+| `MAX_POSTS` | Number of posts to extract. Set to `None` for no post limit | `50` |
 | `GROUP_URL` | Target Facebook group URL | YOUR_GROUP_ID_HERE |
-| `MAX_SCROLLS` | Maximum scroll attempts | 30 |
+| `MAX_SCROLLS` | Maximum scroll attempts. Set to `None` for unlimited scrolling | `30` |
+| `MAX_STAGNANT_SCROLLS` | Stops an unlimited run after this many empty scrolls | `10` |
 | `OUTPUT_FILE` | Output file name | fb_posts_output.txt |
 
 ## 🔒 Privacy & Ethics
@@ -126,4 +129,4 @@ This project is for educational and portfolio purposes. Please respect Facebook'
 
 ---
 
-**Note**: This tool is designed for educational purposes and portfolio demonstration. Always respect website terms of service and use responsibly. 
+**Note**: This tool is designed for educational purposes and portfolio demonstration. Always respect website terms of service and use responsibly.
