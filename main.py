@@ -18,12 +18,25 @@ MESSAGE_SELECTORS = [
     "div[data-ad-preview='message']",
     "div[data-ad-rendering-role='story_message']",
 ]
+QUOTE_SELECTORS = [
+    "blockquote.html-blockquote",
+    "blockquote",
+]
 SEE_MORE_LABELS = [
     "See more",
     "Xem thêm",
     "Meer weergeven",
     "Ver más",
     "Mostra altro",
+]
+SEE_ORIGINAL_LABELS = [
+    "See original",
+]
+TRANSLATION_CONTROL_LABELS = [
+    "See original",
+    "Hide original",
+    "Rate this translation",
+    "See translation",
 ]
 
 
@@ -46,11 +59,66 @@ def expand_visible_posts(page):
     return clicked
 
 
+def expand_post_card(post_card):
+    clicked = 0
+    for label in SEE_ORIGINAL_LABELS:
+        clicked += click_all(post_card.get_by_role("button", name=label, exact=True))
+        clicked += click_all(post_card.get_by_role("link", name=label, exact=True))
+    return clicked
+
+
 def clean_message_text(text):
     text = text.strip()
     for label in SEE_MORE_LABELS:
         text = re.sub(rf"\s*…\s*{re.escape(label)}\s*$", "", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def clean_quote_text(text):
+    if not text:
+        return ""
+
+    has_translation_controls = any(label in text for label in TRANSLATION_CONTROL_LABELS)
+    if not re.search(r"https?://", text) and not has_translation_controls:
+        return ""
+
+    cleaned = text
+    for label in TRANSLATION_CONTROL_LABELS:
+        cleaned = re.sub(rf"\s*·\s*{re.escape(label)}", "", cleaned)
+
+    # Preview quotes often embed the shared URL inline with the quote text.
+    cleaned = re.sub(r"(https?://[^\s\"'”]+)", r"\n\1\n", cleaned)
+
+    groups = []
+    current_group = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip(" \t·")
+        if not line:
+            continue
+        if re.fullmatch(r"https?://\S+", line):
+            if current_group:
+                groups.append(current_group)
+                current_group = []
+            continue
+        if line in TRANSLATION_CONTROL_LABELS:
+            continue
+        current_group.append(line)
+
+    if current_group:
+        groups.append(current_group)
+
+    if not groups:
+        return ""
+
+    first_group = groups[0]
+    if has_translation_controls and len(first_group) > 1:
+        first_group = [first_group[0]]
+    elif len(first_group) > 1 and all(
+        re.fullmatch(r'["“].*["”]', line) for line in first_group
+    ):
+        first_group = [first_group[0]]
+
+    return clean_message_text("\n".join(first_group))
 
 
 def canonicalize_external_url(url):
@@ -228,6 +296,22 @@ def get_message_text(post_card):
     return "\n\n".join(parts).strip()
 
 
+def get_quote_text(post_card):
+    for selector in QUOTE_SELECTORS:
+        quotes = post_card.locator(selector)
+        for i in range(quotes.count()):
+            text = clean_quote_text(quotes.nth(i).inner_text())
+            if text:
+                return text
+    return ""
+
+
+def has_url_line(text):
+    if not text:
+        return False
+    return any(re.fullmatch(r"https?://\S+", line.strip()) for line in text.splitlines())
+
+
 def resolve_preview_url(page, preview_link):
     popup = None
     try:
@@ -297,9 +381,16 @@ def collect_external_urls(post_card, page, resolved_preview_urls):
 
 
 def extract_post_content(post_card, page, resolved_preview_urls):
-    message_text = get_message_text(post_card)
+    if expand_post_card(post_card):
+        page.wait_for_timeout(300)
+
+    raw_message_text = get_message_text(post_card)
+    quote_text = get_quote_text(post_card)
     external_urls = collect_external_urls(post_card, page, resolved_preview_urls)
-    message_text = dedupe_message_url_lines(message_text, external_urls)
+    message_text = dedupe_message_url_lines(raw_message_text, external_urls)
+
+    if quote_text and quote_text not in (message_text or "") and not has_url_line(raw_message_text):
+        message_text = "\n\n".join(part for part in [message_text, quote_text] if part)
 
     if not message_text and not external_urls:
         return None
