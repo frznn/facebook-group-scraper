@@ -122,6 +122,35 @@ def add_unique(items, value):
         items.append(value)
 
 
+def parse_url_only_message_line(line):
+    stripped = line.strip()
+    if re.fullmatch(r"https?://\S+", stripped):
+        return stripped, stripped
+
+    match = re.fullmatch(r"\[(https?://[^\]]+)\]\((https?://[^)]+)\)", stripped)
+    if match:
+        return match.group(1), match.group(2)
+
+    return None, None
+
+
+def line_url_matches_external_url(url, external_urls, normalized_external_urls):
+    if not url:
+        return False
+
+    normalized_url = normalize_outbound_url(url)
+    if normalized_url and normalized_url in normalized_external_urls:
+        return True
+
+    if url.endswith(("...", "\u2026")):
+        prefix = url[:-3] if url.endswith("...") else url[:-1]
+        return normalized_url and any(
+            external_url.startswith(prefix) for external_url in external_urls
+        )
+
+    return False
+
+
 def dedupe_message_url_lines(message_text, external_urls):
     if not message_text or not external_urls:
         return message_text
@@ -139,17 +168,48 @@ def dedupe_message_url_lines(message_text, external_urls):
             deduped_lines.append("")
             continue
 
-        if not re.fullmatch(r"https?://\S+", stripped):
+        display_url, target_url = parse_url_only_message_line(stripped)
+        if not target_url:
             deduped_lines.append(line)
             continue
 
-        if stripped.endswith(("...", "\u2026")):
-            prefix = stripped[:-3] if stripped.endswith("...") else stripped[:-1]
-            if any(url.startswith(prefix) for url in external_urls):
+        display_matches = line_url_matches_external_url(
+            display_url, external_urls, normalized_external_urls
+        )
+        target_matches = line_url_matches_external_url(
+            target_url, external_urls, normalized_external_urls
+        )
+
+        if display_matches and target_matches:
+            continue
+
+        normalized_target_url = normalize_outbound_url(target_url)
+        if not normalized_target_url or normalized_target_url not in normalized_external_urls:
+            normalized_display_url = normalize_outbound_url(display_url)
+            if not (
+                display_matches
+                and target_url.endswith(("...", "\u2026"))
+                or target_matches
+                and display_url.endswith(("...", "\u2026"))
+                or (
+                    normalized_display_url
+                    and normalized_target_url
+                    and normalized_display_url == normalized_target_url
+                    and (display_matches or target_matches)
+                )
+            ):
+                deduped_lines.append(line)
+            continue
+
+        if display_url.endswith(("...", "\u2026")):
+            prefix = display_url[:-3] if display_url.endswith("...") else display_url[:-1]
+            if normalized_target_url.startswith(prefix) or any(
+                url.startswith(prefix) for url in external_urls
+            ):
                 continue
 
-        normalized_line = normalize_outbound_url(stripped)
-        if normalized_line and normalized_line in normalized_external_urls:
+        normalized_display_url = normalize_outbound_url(display_url)
+        if normalized_display_url and normalized_display_url == normalized_target_url:
             continue
 
         deduped_lines.append(line)
