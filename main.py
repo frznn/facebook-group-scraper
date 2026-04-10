@@ -122,6 +122,41 @@ def add_unique(items, value):
         items.append(value)
 
 
+def dedupe_message_url_lines(message_text, external_urls):
+    if not message_text or not external_urls:
+        return message_text
+
+    normalized_external_urls = {
+        normalized
+        for normalized in (normalize_outbound_url(url) for url in external_urls)
+        if normalized
+    }
+
+    deduped_lines = []
+    for line in message_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            deduped_lines.append("")
+            continue
+
+        if not re.fullmatch(r"https?://\S+", stripped):
+            deduped_lines.append(line)
+            continue
+
+        if stripped.endswith(("...", "\u2026")):
+            prefix = stripped[:-3] if stripped.endswith("...") else stripped[:-1]
+            if any(url.startswith(prefix) for url in external_urls):
+                continue
+
+        normalized_line = normalize_outbound_url(stripped)
+        if normalized_line and normalized_line in normalized_external_urls:
+            continue
+
+        deduped_lines.append(line)
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(deduped_lines)).strip()
+
+
 def get_message_text(post_card):
     parts = []
     for selector in MESSAGE_SELECTORS:
@@ -204,6 +239,7 @@ def collect_external_urls(post_card, page, resolved_preview_urls):
 def extract_post_content(post_card, page, resolved_preview_urls):
     message_text = get_message_text(post_card)
     external_urls = collect_external_urls(post_card, page, resolved_preview_urls)
+    message_text = dedupe_message_url_lines(message_text, external_urls)
 
     if not message_text and not external_urls:
         return None
