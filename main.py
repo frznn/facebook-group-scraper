@@ -38,6 +38,7 @@ TRANSLATION_CONTROL_LABELS = [
     "Rate this translation",
     "See translation",
 ]
+SCROLL_STEP_RATIO = 0.85
 
 
 def click_all(locator):
@@ -219,6 +220,15 @@ def youtube_url_from_thumbnail(src):
 def add_unique(items, value):
     if value and value not in items:
         items.append(value)
+
+
+def is_virtualized_placeholder(post_card):
+    virtualized = post_card.locator("[data-virtualized]").first
+    if virtualized.count() == 0:
+        return False
+    if virtualized.get_attribute("data-virtualized") != "true":
+        return False
+    return not safe_inner_text(post_card) and post_card.locator("a[href]").count() == 0
 
 
 def parse_url_only_message_line(line):
@@ -438,6 +448,50 @@ def extract_post_content(post_card, page, resolved_preview_urls):
     return "\n\n".join(parts).strip()
 
 
+def scroll_feed(page):
+    return page.evaluate(
+        f"""
+        () => {{
+            const before = window.scrollY;
+            const step = Math.max(400, Math.floor(window.innerHeight * {SCROLL_STEP_RATIO}));
+            window.scrollBy(0, step);
+            return {{
+                before,
+                after: window.scrollY,
+                moved: window.scrollY - before,
+                step,
+            }};
+        }}
+        """
+    )
+
+
+def collect_visible_posts(page, posts, processed_posts, resolved_preview_urls):
+    post_cards = page.locator(POST_CARD_SELECTOR)
+    count = post_cards.count()
+    print(f"   → {count} feed items found in DOM")
+
+    new_posts = 0
+    for i in range(count):
+        post_card = post_cards.nth(i)
+        if is_virtualized_placeholder(post_card):
+            continue
+        try:
+            content = extract_post_content(post_card, page, resolved_preview_urls)
+        except Exception as e:
+            print(f"   ⚠️ Error processing feed item {i}: {e}")
+            continue
+        if content and content not in processed_posts:
+            posts.append(content)
+            processed_posts.add(content)
+            new_posts += 1
+            print(f"   ✓ Post #{len(posts)} loaded")
+            if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
+                break
+
+    return new_posts
+
+
 def run_scraper():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -454,47 +508,22 @@ def run_scraper():
         processed_posts = set()  # track processed posts by their content
         resolved_preview_urls = {}
 
-        # keep scrolling until we have MAX_POSTS or reach MAX_SCROLLS
+        # Collect the initially rendered feed items before scrolling so
+        # Facebook's virtualized placeholders do not replace them first.
         while (MAX_POSTS is None or len(posts) < MAX_POSTS) and (
-            MAX_SCROLLS is None or scrolls < MAX_SCROLLS
+            MAX_SCROLLS is None or scrolls <= MAX_SCROLLS
         ):
-            scrolls += 1
-            if MAX_SCROLLS is None:
-                print(f"📜 Scroll {scrolls}…")
-            else:
-                print(f"📜 Scroll {scrolls}/{MAX_SCROLLS}…")
-
-            # scroll the entire page
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(2)  # wait a bit for new content
-
             expanded = expand_visible_posts(page)
             if expanded:
                 print(f"   ↳ Expanded {expanded} collapsed post sections")
                 time.sleep(1)
 
-            post_cards = page.locator(POST_CARD_SELECTOR)
-            count = post_cards.count()
-            print(f"   → {count} feed items found in DOM")
+            new_posts_this_scroll = collect_visible_posts(
+                page, posts, processed_posts, resolved_preview_urls
+            )
 
-            new_posts_this_scroll = 0
-
-            # process all feed items and check for new posts
-            for i in range(count):
-                try:
-                    content = extract_post_content(
-                        post_cards.nth(i), page, resolved_preview_urls
-                    )
-                    if content and content not in processed_posts:
-                        posts.append(content)
-                        processed_posts.add(content)
-                        new_posts_this_scroll += 1
-                        print(f"   ✓ Post #{len(posts)} loaded")
-                        if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
-                            break
-                except Exception as e:
-                    print(f"   ⚠️ Error processing feed item {i}: {e}")
-                    continue
+            if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
+                break
 
             # When either limit is unlimited, stop after several empty scrolls
             # so the scraper doesn't loop forever once the feed is exhausted.
@@ -510,9 +539,26 @@ def run_scraper():
                 else:
                     stagnant_scrolls = 0
 
-            # If no new posts found in this scroll, wait a bit more
-            if MAX_POSTS is None or len(posts) < MAX_POSTS:
-                time.sleep(1)
+            if MAX_SCROLLS is not None and scrolls >= MAX_SCROLLS:
+                break
+
+            if MAX_SCROLLS is None:
+                print(f"📜 Scroll {scrolls + 1}…")
+            else:
+                print(f"📜 Scroll {scrolls + 1}/{MAX_SCROLLS}…")
+
+            scroll_info = scroll_feed(page)
+            scrolls += 1
+            time.sleep(2)
+
+            if scroll_info["moved"] <= 0 and new_posts_this_scroll == 0:
+                stagnant_scrolls += 1
+                print(
+                    f"   ⏳ Feed did not advance ({stagnant_scrolls}/{MAX_STAGNANT_SCROLLS})"
+                )
+                if stagnant_scrolls >= MAX_STAGNANT_SCROLLS:
+                    print("🛑 Feed appears exhausted. Stopping scraper.")
+                    break
 
         # write results to file
         print(f"✅ Total {len(posts)} posts found. Saving…")
