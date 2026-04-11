@@ -74,6 +74,37 @@ def clean_message_text(text):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def safe_inner_text(locator, timeout=1000):
+    try:
+        return locator.inner_text(timeout=timeout)
+    except Exception:
+        return ""
+
+
+def extract_accessible_message_text(node):
+    tokens = node.evaluate(
+        """
+        (element) => {
+          const out = [];
+          const nodes = element.querySelectorAll('img[alt], [role="img"][aria-label]');
+          for (const el of nodes) {
+            if (el.closest('[hidden], [aria-hidden="true"]')) {
+              continue;
+            }
+            const alt = el.getAttribute('alt');
+            const aria = el.getAttribute('aria-label');
+            const label = (alt || aria || '').trim();
+            if (label) {
+              out.push(label);
+            }
+          }
+          return out;
+        }
+        """
+    )
+    return clean_message_text(" ".join(tokens))
+
+
 def clean_quote_text(text):
     if not text:
         return ""
@@ -290,7 +321,10 @@ def get_message_text(post_card):
     for selector in MESSAGE_SELECTORS:
         messages = post_card.locator(selector)
         for i in range(messages.count()):
-            text = clean_message_text(messages.nth(i).inner_text())
+            node = messages.nth(i)
+            text = clean_message_text(safe_inner_text(node))
+            if not text:
+                text = extract_accessible_message_text(node)
             if text and text not in parts:
                 parts.append(text)
     return "\n\n".join(parts).strip()
@@ -300,7 +334,7 @@ def get_quote_text(post_card):
     for selector in QUOTE_SELECTORS:
         quotes = post_card.locator(selector)
         for i in range(quotes.count()):
-            text = clean_quote_text(quotes.nth(i).inner_text())
+            text = clean_quote_text(safe_inner_text(quotes.nth(i)))
             if text:
                 return text
     return ""
