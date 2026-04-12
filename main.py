@@ -39,6 +39,10 @@ TRANSLATION_CONTROL_LABELS = [
     "See translation",
 ]
 SCROLL_STEP_RATIO = 0.85
+FACEBOOK_POST_PATTERNS = (
+    re.compile(r"^/groups/[^/]+/posts/(\d+)/?$"),
+    re.compile(r"^/groups/[^/]+/permalink/(\d+)/?$"),
+)
 
 
 def click_all(locator):
@@ -222,6 +226,43 @@ def add_unique(items, value):
         items.append(value)
 
 
+def canonicalize_facebook_post_url(url):
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host and not host.endswith("facebook.com"):
+        return None
+
+    path = parsed.path.rstrip("/")
+    for pattern in FACEBOOK_POST_PATTERNS:
+        match = pattern.match(path)
+        if match:
+            return f"https://www.facebook.com{path}/"
+
+    if parsed.path == "/permalink.php":
+        query = parse_qs(parsed.query)
+        story_fbid = query.get("story_fbid", [None])[0]
+        post_id = query.get("id", [None])[0]
+        if story_fbid:
+            kept_query = {"story_fbid": story_fbid}
+            if post_id:
+                kept_query["id"] = post_id
+            return urlunparse(
+                (
+                    "https",
+                    "www.facebook.com",
+                    parsed.path,
+                    "",
+                    urlencode(kept_query),
+                    "",
+                )
+            )
+
+    return None
+
+
 def is_virtualized_placeholder(post_card):
     virtualized = post_card.locator("[data-virtualized]").first
     if virtualized.count() == 0:
@@ -229,6 +270,25 @@ def is_virtualized_placeholder(post_card):
     if virtualized.get_attribute("data-virtualized") != "true":
         return False
     return not safe_inner_text(post_card) and post_card.locator("a[href]").count() == 0
+
+
+def extract_post_key(post_card, page_url):
+    anchors = post_card.locator("a[href]")
+    for i in range(anchors.count()):
+        href = anchors.nth(i).get_attribute("href")
+        if not href:
+            continue
+        canonical_url = canonicalize_facebook_post_url(urljoin(page_url, href))
+        if canonical_url:
+            return f"url:{canonical_url}"
+
+    positions = post_card.locator("[aria-posinset]")
+    for i in range(positions.count()):
+        pos = positions.nth(i).get_attribute("aria-posinset")
+        if pos:
+            return f"feed-pos:{pos}"
+
+    return None
 
 
 def parse_url_only_message_line(line):
@@ -466,7 +526,7 @@ def scroll_feed(page):
     )
 
 
-def collect_visible_posts(page, posts, processed_posts, resolved_preview_urls):
+def collect_visible_posts(page, posts, processed_post_keys, resolved_preview_urls):
     post_cards = page.locator(POST_CARD_SELECTOR)
     count = post_cards.count()
     print(f"   → {count} feed items found in DOM")
@@ -481,9 +541,11 @@ def collect_visible_posts(page, posts, processed_posts, resolved_preview_urls):
         except Exception as e:
             print(f"   ⚠️ Error processing feed item {i}: {e}")
             continue
-        if content and content not in processed_posts:
+        post_key = extract_post_key(post_card, page.url)
+        dedupe_key = post_key or f"content:{content}"
+        if content and dedupe_key not in processed_post_keys:
             posts.append(content)
-            processed_posts.add(content)
+            processed_post_keys.add(dedupe_key)
             new_posts += 1
             print(f"   ✓ Post #{len(posts)} loaded")
             if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
@@ -505,7 +567,7 @@ def run_scraper():
         posts = []
         scrolls = 0
         stagnant_scrolls = 0
-        processed_posts = set()  # track processed posts by their content
+        processed_post_keys = set()
         resolved_preview_urls = {}
 
         # Collect the initially rendered feed items before scrolling so
@@ -519,7 +581,7 @@ def run_scraper():
                 time.sleep(1)
 
             new_posts_this_scroll = collect_visible_posts(
-                page, posts, processed_posts, resolved_preview_urls
+                page, posts, processed_post_keys, resolved_preview_urls
             )
 
             if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
