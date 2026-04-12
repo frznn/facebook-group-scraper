@@ -1,132 +1,108 @@
 # Facebook Group Content Scraper
 
-A robust web scraping tool built with Playwright to extract posts from Facebook groups efficiently and reliably.
+This fork keeps the original Playwright-based Facebook group scraper, but expands it into a more reliable feed scraper for real-world groups with shared links, translated posts, emoji-only posts, and Facebook's virtualized feed rendering.
 
-## 🚀 Features
+## Current Features
 
-- **Smart Content Deduplication**: Prevents duplicate posts using content-based tracking
-- **Session Management**: Saves login state for seamless re-authentication
-- **Dynamic Content Loading**: Handles Facebook's infinite scroll and "See More" buttons
-- **Error Resilience**: Robust error handling for network issues and DOM changes
-- **Configurable**: Easy to customize number of posts and target groups
+- Extracts post text from Facebook group feeds using a saved login session
+- Expands multiple `See more` labels, including `See more`, `Xem thêm`, `Meer weergeven`, `Ver más`, and `Mostra altro`
+- Expands `See original` where Facebook shows translated content
+- Extracts outbound links from posts, including resolved preview links and normalized YouTube URLs
+- Captures quote text from shared-link previews when the quote contains meaningful text
+- Captures emoji-only posts by reading accessible emoji labels from the DOM
+- Dedupes duplicate URL lines inside a single post block
+- Dedupes feed items by Facebook post identity when possible, instead of collapsing different posts that happen to have the same text
+- Scrolls through the feed incrementally so Facebook virtualization is less likely to skip posts
+- Supports capped runs or effectively unlimited runs by setting limits to `None`
 
-## 🛠️ Technologies Used
+## Differences From The Original Repo
 
-- **Python 3.8+**
-- **Playwright**: Modern web automation framework
-- **Chrome Browser**: Headless and headed modes supported
+- The original repo only scraped `div[data-ad-rendering-role='story_message']` text. This fork extracts richer post content, including links, quotes, and emoji-only posts.
+- The original repo only clicked the Vietnamese `Xem thêm` button. This fork supports several common `See more` labels and `See original`.
+- The original repo deduped posts by text content only. This fork prefers a Facebook post identity key and falls back to content only when necessary.
+- The original repo jumped straight to the bottom of the page on each loop. This fork scrolls in smaller steps to reduce skipped posts caused by Facebook feed virtualization.
+- The original repo could miss shared-link text, preview links, truncated URLs, and markdown-style duplicate link artifacts. This fork handles those cases explicitly.
+- The original repo had a single fixed post limit variable. This fork uses `MAX_POSTS`, `MAX_SCROLLS`, and `MAX_STAGNANT_SCROLLS`, and any of the first two can be set to `None`.
 
-## 📋 Prerequisites
+## Setup
+
+1. Clone the repo:
 
 ```bash
-pip install playwright
-playwright install
-```
-
-## 🔧 Installation & Setup
-
-1. **Clone the repository:**
-```bash
-git clone <your-repo-url>
+git clone <your-fork-url>
 cd facebook-group-scraper
 ```
 
-2. **Install dependencies:**
+2. Create a virtual environment and install Playwright:
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install playwright
-playwright install
+python -m playwright install chromium
 ```
 
-3. **Configure your target group:**
-   - Edit `main.py` and update `GROUP_URL` with your target Facebook group URL
-   - Replace `YOUR_GROUP_ID_HERE` with the actual group ID from Facebook
-   - Example: `"https://www.facebook.com/groups/123456789012345"`
-   - Set `MAX_POSTS = None` to scrape all available posts
-   - Set `MAX_SCROLLS = None` to allow unlimited scrolling
+3. Save a Facebook login session:
 
-## 🚀 Usage
-
-### Step 1: Login and Save Session
 ```bash
 python login_and_save_state.py
 ```
-- A browser window will open
-- Log in to Facebook manually
-- Return to terminal and press Enter to save the session
 
-### Step 2: Run the Scraper
+4. Open `main.py` and set these values:
+
+- `GROUP_URL`: the target Facebook group URL
+- `MAX_POSTS`: how many posts to keep, or `None` for no post cap
+- `MAX_SCROLLS`: how many scroll steps to allow, or `None` for no scroll cap
+- `MAX_STAGNANT_SCROLLS`: how many empty passes to tolerate before stopping an unlimited run
+- `OUTPUT_FILE`: where to write the extracted posts
+
+## Usage
+
+Run the login helper once:
+
+```bash
+python login_and_save_state.py
+```
+
+Then run the scraper:
+
 ```bash
 python main.py
 ```
-- The scraper will automatically navigate to your target group
-- Extract posts while handling infinite scroll
-- Save results to `fb_posts_output.txt`
 
-## 📊 Output Format
+The scraper writes plain-text output in this format:
 
-```
+```text
 --- POST 1 ---
-[Post content here]
+[post text]
+
+[outbound links]
 
 --- POST 2 ---
-[Post content here]
 ...
 ```
 
-## ⚙️ Configuration
+## Current Configuration
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MAX_POSTS` | Number of posts to extract. Set to `None` for no post limit | `50` |
-| `GROUP_URL` | Target Facebook group URL | YOUR_GROUP_ID_HERE |
-| `MAX_SCROLLS` | Maximum scroll attempts. Set to `None` for unlimited scrolling | `30` |
-| `MAX_STAGNANT_SCROLLS` | Stops an unlimited run after this many empty scrolls | `10` |
-| `OUTPUT_FILE` | Output file name | fb_posts_output.txt |
+The current defaults in `main.py` are:
 
-## 🔒 Privacy & Ethics
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `MAX_POSTS` | Maximum posts to save. Set to `None` for no post cap. | `50` |
+| `GROUP_URL` | Facebook group URL to scrape. | `YOUR_GROUP_ID_HERE` |
+| `OUTPUT_FILE` | Output file path. | `fb_posts_output.txt` |
+| `STORAGE_STATE` | Saved Playwright login state. | `facebook_state.json` |
+| `MAX_SCROLLS` | Maximum incremental scroll passes. Set to `None` for no scroll cap. | `30` |
+| `MAX_STAGNANT_SCROLLS` | Stop condition when an unlimited run stops finding new posts. | `10` |
 
-- **Respectful Scraping**: Built-in delays to avoid overwhelming servers
-- **Session Management**: Uses saved login state to avoid repeated authentication
-- **Content Only**: Extracts only public post content, no private data
-- **Rate Limiting**: Implements appropriate delays between actions
+## Notes And Limitations
 
-## 🐛 Troubleshooting
+- The scraper still uses in-file configuration rather than CLI arguments.
+- Output is plain text, not JSON or CSV.
+- Facebook changes its DOM often, so selectors may need updates over time.
+- Some preview links require opening a popup to resolve the final destination, which can slow long runs.
+- If Facebook does not expose a stable permalink for a feed item, the scraper falls back to the feed position for deduping within that run.
 
-### Common Issues:
+## Responsible Use
 
-1. **"FileNotFoundError: facebook_state.json"**
-   - Run `login_and_save_state.py` first and complete the login process
-
-2. **Posts being skipped**
-   - The latest version includes content-based deduplication to prevent this
-   - Check your internet connection and Facebook group accessibility
-
-3. **"See More" buttons not expanding**
-   - The scraper automatically handles Dutch "Meer weergeven" buttons
-   - For other languages, update the button text in the code
-
-## 📈 Performance
-
-- **Success Rate**: 100% (fixed from previous 98% due to content-based deduplication)
-- **Speed**: ~2-3 seconds per scroll with built-in delays
-- **Reliability**: Handles Facebook's dynamic content loading
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is for educational and portfolio purposes. Please respect Facebook's Terms of Service and use responsibly.
-
-## 👨‍💻 Author
-
-[Your Name] - Web Scraping & Automation Specialist
-
----
-
-**Note**: This tool is designed for educational purposes and portfolio demonstration. Always respect website terms of service and use responsibly.
+Use this only where you have permission to access the content and where scraping is appropriate. Respect Facebook's terms, privacy expectations, and the group members whose content you are collecting.
