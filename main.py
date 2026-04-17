@@ -10,6 +10,7 @@ MAX_POSTS = 50
 GROUP_URL = "https://www.facebook.com/groups/YOUR_GROUP_ID_HERE"
 OUTPUT_FILE = "fb_posts_output.txt"
 STORAGE_STATE = "facebook_state.json"
+INCLUDE_POST_AUTHOR = False
 MAX_SCROLLS = 30  # Set MAX_SCROLLS to None for unlimited scrolling.
 MAX_STAGNANT_SCROLLS = 10  # Used when MAX_POSTS or MAX_SCROLLS is unlimited.
 
@@ -48,6 +49,46 @@ FACEBOOK_POST_PATTERNS = (
 )
 LEADING_DECORATIVE_PREVIEW_SYMBOLS = re.compile(
     r"^(?:[\s\u200b\u200c\u200d\ufe0f]|[\u25a0-\u25ff\U0001F7E5-\U0001F7EB])+\s*"
+)
+FACEBOOK_GROUP_ROOT_PATTERN = re.compile(r"^/groups/[^/]+/?$")
+AUTHOR_TIMESTAMP_PATTERNS = (
+    re.compile(r"^(?:just now|now|edited)$", re.IGNORECASE),
+    re.compile(r"^\d+\s*(?:s|m|min|h|d|w)$", re.IGNORECASE),
+    re.compile(r"^(?:today|yesterday)(?:\s+at\s+.+)?$", re.IGNORECASE),
+)
+AUTHOR_METADATA_PREFIX = "Author: "
+AUTHOR_CANDIDATE_SELECTORS = [
+    "[role='heading'] a[href]",
+    "h2 a[href]",
+    "h3 a[href]",
+    "h4 a[href]",
+    "strong a[href]",
+]
+AUTHOR_SKIP_LABELS = {
+    *(label.casefold() for label in SEE_MORE_LABELS),
+    *(label.casefold() for label in SEE_ORIGINAL_LABELS),
+    *(label.casefold() for label in TRANSLATION_CONTROL_LABELS),
+    "like",
+    "comment",
+    "share",
+    "follow",
+}
+AUTHOR_NON_PROFILE_PREFIXES = (
+    "/business",
+    "/events",
+    "/gaming",
+    "/hashtag",
+    "/help",
+    "/marketplace",
+    "/photo",
+    "/photos",
+    "/privacy",
+    "/reel",
+    "/search",
+    "/share",
+    "/sharer",
+    "/story.php",
+    "/watch",
 )
 
 
@@ -491,6 +532,100 @@ def normalize_inline_whitespace(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def is_timestamp_like(text):
+    return any(pattern.fullmatch(text) for pattern in AUTHOR_TIMESTAMP_PATTERNS)
+
+
+def clean_author_candidate_text(text):
+    if not text:
+        return None
+
+    for raw_line in text.splitlines():
+        candidate = normalize_inline_whitespace(raw_line).strip("· ")
+        if not candidate:
+            continue
+
+        parts = [normalize_inline_whitespace(part) for part in re.split(r"\s+·\s+", candidate)]
+        if len(parts) > 1 and is_timestamp_like(parts[-1]):
+            candidate = " · ".join(part for part in parts[:-1] if part).strip()
+        if not candidate:
+            continue
+
+        if candidate.casefold() in AUTHOR_SKIP_LABELS:
+            continue
+        if is_timestamp_like(candidate):
+            continue
+        if looks_like_url_or_domain(candidate):
+            continue
+        if len(candidate) > 120 or sum(ch.isalpha() for ch in candidate) < 2:
+            continue
+        return candidate
+
+    return None
+
+
+def is_probable_author_facebook_url(url):
+    if not url:
+        return False
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host and not host.endswith("facebook.com"):
+        return False
+
+    if canonicalize_facebook_post_url(url):
+        return False
+
+    path = parsed.path.rstrip("/") or "/"
+    if path == "/" or FACEBOOK_GROUP_ROOT_PATTERN.fullmatch(path):
+        return False
+
+    if path.startswith("/groups/") and "/user/" not in path:
+        return False
+
+    return not any(path == prefix or path.startswith(prefix + "/") for prefix in AUTHOR_NON_PROFILE_PREFIXES)
+
+
+def extract_post_author(post_card, page_url):
+    seen_candidates = set()
+
+    def try_candidate(locator):
+        href = safe_get_attribute(locator, "href")
+        if not href or href.startswith(("?", "#")):
+            return None
+
+        absolute_url = urljoin(page_url, href)
+        if not is_probable_author_facebook_url(absolute_url):
+            return None
+
+        candidate = clean_author_candidate_text(safe_inner_text(locator))
+        if not candidate:
+            candidate = clean_author_candidate_text(safe_get_attribute(locator, "aria-label") or "")
+        if not candidate:
+            return None
+
+        key = (candidate.casefold(), absolute_url)
+        if key in seen_candidates:
+            return None
+        seen_candidates.add(key)
+        return candidate
+
+    for selector in AUTHOR_CANDIDATE_SELECTORS:
+        candidates = post_card.locator(selector)
+        for i in range(candidates.count()):
+            candidate = try_candidate(candidates.nth(i))
+            if candidate:
+                return candidate
+
+    fallback_links = post_card.locator("a[href]")
+    for i in range(min(fallback_links.count(), 12)):
+        candidate = try_candidate(fallback_links.nth(i))
+        if candidate:
+            return candidate
+
+    return None
+
+
 def strip_leading_decorative_preview_symbols(text):
     stripped = LEADING_DECORATIVE_PREVIEW_SYMBOLS.sub("", text)
     if stripped and re.match(r"[#A-Za-z0-9]", stripped):
@@ -743,6 +878,7 @@ def extract_post_content(post_card, page, resolved_preview_urls):
     if expand_post_card(post_card):
         page.wait_for_timeout(300)
 
+    post_author = extract_post_author(post_card, page.url) if INCLUDE_POST_AUTHOR else None
     raw_message_text = get_message_text(post_card)
     quote_text = get_quote_text(post_card)
     external_links = collect_external_links(post_card, page, resolved_preview_urls)
@@ -756,6 +892,8 @@ def extract_post_content(post_card, page, resolved_preview_urls):
         return None
 
     parts = []
+    if post_author:
+        parts.append(f"{AUTHOR_METADATA_PREFIX}{post_author}")
     if message_text:
         parts.append(message_text)
     if external_links:
