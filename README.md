@@ -7,7 +7,7 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - Extracts post text from Facebook group feeds using a saved login session
 - Expands multiple `See more` labels, including `See more`, `Xem thêm`, `Meer weergeven`, `Ver más`, and `Mostra altro`
 - Expands `See original` where Facebook shows translated content
-- Extracts outbound links from posts, including resolved preview links and normalized YouTube URLs
+- Extracts outbound links from posts, including resolved preview links, preview titles when Facebook exposes them, and normalized YouTube URLs
 - Captures quote text from shared-link previews when the quote contains meaningful text
 - Captures emoji-only posts by reading accessible emoji labels from the DOM
 - Dedupes duplicate URL lines inside a single post block
@@ -21,7 +21,7 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - The original repo only clicked the Vietnamese `Xem thêm` button. This fork supports several common `See more` labels and `See original`.
 - The original repo deduped posts by text content only. This fork prefers a Facebook post identity key and falls back to content only when necessary.
 - The original repo jumped straight to the bottom of the page on each loop. This fork scrolls in smaller steps to reduce skipped posts caused by Facebook feed virtualization.
-- The original repo could miss shared-link text, preview links, truncated URLs, and markdown-style duplicate link artifacts. This fork handles those cases explicitly.
+- The original repo could miss shared-link text, preview links, preview titles, truncated URLs, and markdown-style duplicate link artifacts. This fork handles those cases explicitly.
 - The original repo had a single fixed post limit variable. This fork uses `MAX_POSTS`, `MAX_SCROLLS`, and `MAX_STAGNANT_SCROLLS`, and any of the first two can be set to `None`.
 
 ## Setup
@@ -76,11 +76,14 @@ The scraper writes plain-text output in this format:
 --- POST 1 ---
 [post text]
 
-[outbound links]
+[preview title if available]
+https://example.com/page
 
 --- POST 2 ---
 ...
 ```
+
+When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL.
 
 ## Current Configuration
 
@@ -101,6 +104,7 @@ The current defaults in `main.py` are:
 - Output is plain text, not JSON or CSV.
 - Facebook changes its DOM often, so selectors may need updates over time.
 - Some preview links require opening a popup to resolve the final destination, which can slow long runs.
+- Preview titles are best-effort and depend on Facebook exposing readable preview-card text in the feed DOM.
 - If Facebook does not expose a stable permalink for a feed item, the scraper falls back to the feed position for deduping within that run.
 
 ## Responsible Use

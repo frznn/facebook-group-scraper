@@ -38,10 +38,16 @@ TRANSLATION_CONTROL_LABELS = [
     "Rate this translation",
     "See translation",
 ]
+UNAVAILABLE_PREVIEW_PHRASES = [
+    "This content isn't available right now",
+]
 SCROLL_STEP_RATIO = 0.85
 FACEBOOK_POST_PATTERNS = (
     re.compile(r"^/groups/[^/]+/posts/(\d+)/?$"),
     re.compile(r"^/groups/[^/]+/permalink/(\d+)/?$"),
+)
+LEADING_DECORATIVE_PREVIEW_SYMBOLS = re.compile(
+    r"^(?:[\s\u200b\u200c\u200d\ufe0f]|[\u25a0-\u25ff\U0001F7E5-\U0001F7EB])+\s*"
 )
 
 
@@ -84,6 +90,13 @@ def safe_inner_text(locator, timeout=1000):
         return locator.inner_text(timeout=timeout)
     except Exception:
         return ""
+
+
+def safe_get_attribute(locator, name, timeout=1000):
+    try:
+        return locator.get_attribute(name, timeout=timeout)
+    except Exception:
+        return None
 
 
 def extract_accessible_message_text(node):
@@ -221,9 +234,53 @@ def youtube_url_from_thumbnail(src):
     return None
 
 
-def add_unique(items, value):
-    if value and value not in items:
-        items.append(value)
+def preview_title_score(title):
+    if not title:
+        return 0
+
+    title = normalize_inline_whitespace(title)
+    if any(phrase.casefold() in title.casefold() for phrase in UNAVAILABLE_PREVIEW_PHRASES):
+        return 0
+
+    alnum_chars = "".join(ch for ch in title if ch.isalnum())
+    alpha_chars = "".join(ch for ch in title if ch.isalpha())
+    if len(alnum_chars) < 3 or len(alpha_chars) < 2:
+        return 0
+
+    tokens = [re.sub(r"\W+", "", token) for token in title.split()]
+    significant_tokens = [
+        token for token in tokens if len(token) >= 3 and any(ch.isalpha() for ch in token)
+    ]
+    one_char_tokens = [token for token in tokens if len(token) == 1]
+    mixed_noise_tokens = [
+        token
+        for token in tokens
+        if len(token) >= 8 and any(ch.isalpha() for ch in token) and any(ch.isdigit() for ch in token)
+    ]
+    score = len(alnum_chars) + (len(significant_tokens) * 10) - (len(one_char_tokens) * 3)
+    score -= len(mixed_noise_tokens) * 25
+    if re.search(r"\.com\S", title, re.IGNORECASE):
+        score -= 40
+    if re.search(r"\d{4}[A-Za-z]", title):
+        score -= 20
+    return max(score, 0)
+
+
+def should_replace_preview_title(current_title, candidate_title):
+    return preview_title_score(candidate_title) > preview_title_score(current_title)
+
+
+def add_external_link(entries, url, title=None):
+    if not url:
+        return
+
+    for entry in entries:
+        if entry["url"] == url:
+            if title and should_replace_preview_title(entry.get("title"), title):
+                entry["title"] = title
+            return
+
+    entries.append({"url": url, "title": title})
 
 
 def canonicalize_facebook_post_url(url):
@@ -267,7 +324,7 @@ def is_virtualized_placeholder(post_card):
     virtualized = post_card.locator("[data-virtualized]").first
     if virtualized.count() == 0:
         return False
-    if virtualized.get_attribute("data-virtualized") != "true":
+    if safe_get_attribute(virtualized, "data-virtualized") != "true":
         return False
     return not safe_inner_text(post_card) and post_card.locator("a[href]").count() == 0
 
@@ -275,8 +332,14 @@ def is_virtualized_placeholder(post_card):
 def extract_post_key(post_card, page_url):
     anchors = post_card.locator("a[href]")
     for i in range(anchors.count()):
-        href = anchors.nth(i).get_attribute("href")
+        href = safe_get_attribute(anchors.nth(i), "href")
         if not href:
+            continue
+        # Ignore query-only and fragment-only Facebook control links. On the
+        # virtualized feed, Facebook emits many `?__tn__...` and `#?...` hrefs
+        # that inherit the current page URL and falsely collapse distinct cards
+        # onto the same post key.
+        if href.startswith(("?", "#")):
             continue
         canonical_url = canonicalize_facebook_post_url(urljoin(page_url, href))
         if canonical_url:
@@ -284,11 +347,49 @@ def extract_post_key(post_card, page_url):
 
     positions = post_card.locator("[aria-posinset]")
     for i in range(positions.count()):
-        pos = positions.nth(i).get_attribute("aria-posinset")
+        pos = safe_get_attribute(positions.nth(i), "aria-posinset")
         if pos:
             return f"feed-pos:{pos}"
 
     return None
+
+
+def has_stable_post_key(post_key):
+    return bool(post_key and post_key.startswith("url:"))
+
+
+def content_dedupe_key(content, prefix="content"):
+    if not content:
+        return None
+    return f"{prefix}:{content}"
+
+
+def post_is_duplicate(post_key, content, processed_post_keys):
+    content_key = content_dedupe_key(content)
+    weak_content_key = content_dedupe_key(content, prefix="weak-content")
+
+    if has_stable_post_key(post_key):
+        return bool(
+            (post_key and post_key in processed_post_keys)
+            or (weak_content_key and weak_content_key in processed_post_keys)
+        )
+
+    return any(
+        key in processed_post_keys
+        for key in [post_key, content_key]
+        if key
+    )
+
+
+def remember_post_dedupe(post_key, content, processed_post_keys):
+    for key in [post_key, content_dedupe_key(content)]:
+        if key:
+            processed_post_keys.add(key)
+
+    if not has_stable_post_key(post_key):
+        weak_content_key = content_dedupe_key(content, prefix="weak-content")
+        if weak_content_key:
+            processed_post_keys.add(weak_content_key)
 
 
 def parse_url_only_message_line(line):
@@ -386,6 +487,141 @@ def dedupe_message_url_lines(message_text, external_urls):
     return re.sub(r"\n{3,}", "\n\n", "\n".join(deduped_lines)).strip()
 
 
+def normalize_inline_whitespace(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_leading_decorative_preview_symbols(text):
+    stripped = LEADING_DECORATIVE_PREVIEW_SYMBOLS.sub("", text)
+    if stripped and re.match(r"[#A-Za-z0-9]", stripped):
+        return stripped
+    return text
+
+
+def looks_like_url_or_domain(text):
+    stripped = text.strip().strip("[]()<>.,;:!?")
+    if not stripped:
+        return False
+
+    if re.fullmatch(r"https?://\S+", stripped):
+        return True
+
+    if any(char.isspace() for char in stripped):
+        return False
+
+    parsed = urlparse(stripped if "://" in stripped else f"https://{stripped}")
+    return bool(parsed.netloc and "." in parsed.netloc)
+
+
+def clean_preview_title_line(text, candidate_urls):
+    title = normalize_inline_whitespace(text)
+    if not title:
+        return None
+
+    title = strip_leading_decorative_preview_symbols(title)
+    title = re.sub(r"^\S+\.com(?=[A-Z])", "", title)
+    title = re.sub(r"^([A-Z][a-z]+)([A-Z][a-z]+\b)", r"\1 \2", title)
+
+    for candidate_url in candidate_urls:
+        host = urlparse(candidate_url).netloc.lower()
+        prefixes = {host}
+        if host.startswith("www."):
+            prefixes.add(host[4:])
+        if host.startswith("m."):
+            prefixes.add(host[2:])
+        if host.startswith("open."):
+            prefixes.add(host[5:])
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            if prefix and title.casefold().startswith(f"{prefix.casefold()} "):
+                title = title[len(prefix) :].strip()
+                break
+
+    tokens = [re.sub(r"\W+", "", token) for token in title.split()]
+    significant_tokens = [
+        token for token in tokens if len(token) >= 3 and any(ch.isalpha() for ch in token)
+    ]
+    short_tokens = [token for token in tokens if len(token) <= 1]
+    if len(tokens) >= 6 and len(significant_tokens) <= 1 and len(short_tokens) >= len(tokens) / 2:
+        return None
+
+    parts = [normalize_inline_whitespace(part) for part in re.split(r"\s+·\s+", title)]
+    if len(parts) > 1 and looks_like_url_or_domain(parts[-1]):
+        title = " · ".join(parts[:-1]).strip()
+        if not title:
+            return None
+    elif len(parts) > 1 and re.match(r"^\d{4}", parts[-1]):
+        parts[-1] = re.match(r"^(\d{4})", parts[-1]).group(1)
+        title = " · ".join(part for part in parts if part).strip()
+        if not title:
+            return None
+
+    if title.casefold() in {
+        label.casefold()
+        for label in SEE_MORE_LABELS + SEE_ORIGINAL_LABELS + TRANSLATION_CONTROL_LABELS
+    }:
+        return None
+
+    normalized_title_url = normalize_outbound_url(title)
+    if normalized_title_url and normalized_title_url in candidate_urls:
+        return None
+
+    if looks_like_url_or_domain(title):
+        return None
+
+    if preview_title_score(title) == 0:
+        return None
+
+    return title
+
+
+def extract_preview_title(preview_link, candidate_urls):
+    seen = set()
+    candidate_urls = {url for url in candidate_urls if url}
+
+    for source in [safe_inner_text(preview_link), safe_get_attribute(preview_link, "aria-label") or ""]:
+        combined = clean_preview_title_line(source, candidate_urls)
+        if combined:
+            key = combined.casefold()
+            if key not in seen:
+                seen.add(key)
+                return combined
+
+        for raw_line in source.splitlines():
+            cleaned = clean_preview_title_line(raw_line, candidate_urls)
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            return cleaned
+
+    return None
+
+
+def attach_preview_title(external_links, title, preferred_url=None):
+    if not title or preview_title_score(title) == 0:
+        return
+
+    normalized_preferred_url = normalize_outbound_url(preferred_url) if preferred_url else None
+    if normalized_preferred_url:
+        for link in external_links:
+            if normalize_outbound_url(link["url"]) == normalized_preferred_url:
+                if should_replace_preview_title(link.get("title"), title):
+                    link["title"] = title
+                return
+
+    untitled_links = [link for link in external_links if not link.get("title")]
+    if len(untitled_links) == 1:
+        untitled_links[0]["title"] = title
+        return
+
+    for link in external_links:
+        if should_replace_preview_title(link.get("title"), title):
+            link["title"] = title
+            return
+
+
 def get_message_text(post_card):
     parts = []
     for selector in MESSAGE_SELECTORS:
@@ -440,48 +676,67 @@ def resolve_preview_url(page, preview_link):
                 pass
 
 
-def collect_external_urls(post_card, page, resolved_preview_urls):
-    urls = []
+def collect_external_links(post_card, page, resolved_preview_urls):
+    links = []
 
     anchors = post_card.locator("a[href]")
     for i in range(anchors.count()):
-        href = anchors.nth(i).get_attribute("href")
+        href = safe_get_attribute(anchors.nth(i), "href")
         if not href:
             continue
         normalized = normalize_outbound_url(urljoin(page.url, href))
         if is_external_url(normalized):
-            add_unique(urls, normalized)
+            add_external_link(links, normalized)
 
     images = post_card.locator("img[src]")
     for i in range(images.count()):
-        derived = youtube_url_from_thumbnail(images.nth(i).get_attribute("src"))
+        derived = youtube_url_from_thumbnail(safe_get_attribute(images.nth(i), "src"))
         if derived:
-            add_unique(urls, derived)
+            add_external_link(links, derived)
 
-    preview_links = post_card.locator("a[target='_blank'][aria-label]")
-    for i in range(min(preview_links.count(), 3)):
+    preview_links = post_card.locator("a[target='_blank'][href]")
+    for i in range(min(preview_links.count(), 6)):
         preview_link = preview_links.nth(i)
-        aria_label = preview_link.get_attribute("aria-label") or ""
-        raw_href = preview_link.get_attribute("href") or ""
+        aria_label = safe_get_attribute(preview_link, "aria-label") or ""
+        raw_href = safe_get_attribute(preview_link, "href") or ""
+        candidate_urls = [link["url"] for link in links]
+        normalized = normalize_outbound_url(urljoin(page.url, raw_href)) if raw_href else None
+        if normalized:
+            candidate_urls.append(normalized)
+        title = extract_preview_title(preview_link, candidate_urls)
+
+        if not raw_href or raw_href.startswith(("?", "#")):
+            attach_preview_title(links, title)
+            continue
         cache_key = f"{aria_label}|{raw_href}"
 
         cached_url = resolved_preview_urls.get(cache_key)
         if cached_url:
-            add_unique(urls, cached_url)
+            add_external_link(links, cached_url, title)
             continue
 
-        normalized = normalize_outbound_url(urljoin(page.url, raw_href)) if raw_href else None
         if is_external_url(normalized):
             resolved_preview_urls[cache_key] = normalized
-            add_unique(urls, normalized)
+            add_external_link(links, normalized, title)
             continue
 
         resolved_url = resolve_preview_url(page, preview_link)
         resolved_preview_urls[cache_key] = resolved_url
         if is_external_url(resolved_url):
-            add_unique(urls, resolved_url)
+            add_external_link(links, resolved_url, title)
 
-    return urls
+    return links
+
+
+def format_external_links(external_links):
+    separator = "\n\n" if any(link.get("title") for link in external_links) else "\n"
+    rendered_links = []
+    for link in external_links:
+        if link.get("title"):
+            rendered_links.append(f"{link['title']}\n{link['url']}")
+        else:
+            rendered_links.append(link["url"])
+    return separator.join(rendered_links)
 
 
 def extract_post_content(post_card, page, resolved_preview_urls):
@@ -490,7 +745,8 @@ def extract_post_content(post_card, page, resolved_preview_urls):
 
     raw_message_text = get_message_text(post_card)
     quote_text = get_quote_text(post_card)
-    external_urls = collect_external_urls(post_card, page, resolved_preview_urls)
+    external_links = collect_external_links(post_card, page, resolved_preview_urls)
+    external_urls = [link["url"] for link in external_links]
     message_text = dedupe_message_url_lines(raw_message_text, external_urls)
 
     if quote_text and quote_text not in (message_text or "") and not has_url_line(raw_message_text):
@@ -502,8 +758,8 @@ def extract_post_content(post_card, page, resolved_preview_urls):
     parts = []
     if message_text:
         parts.append(message_text)
-    if external_urls:
-        parts.append("\n".join(external_urls))
+    if external_links:
+        parts.append(format_external_links(external_links))
 
     return "\n\n".join(parts).strip()
 
@@ -512,14 +768,24 @@ def scroll_feed(page):
     return page.evaluate(
         f"""
         () => {{
-            const before = window.scrollY;
+            const scrollRoot = document.querySelector('#scrollview');
+            const useElementScroll =
+                scrollRoot &&
+                scrollRoot.scrollHeight > scrollRoot.clientHeight + 20;
             const step = Math.max(400, Math.floor(window.innerHeight * {SCROLL_STEP_RATIO}));
-            window.scrollBy(0, step);
+            const before = useElementScroll ? scrollRoot.scrollTop : window.scrollY;
+            if (useElementScroll) {{
+                scrollRoot.scrollBy(0, step);
+            }} else {{
+                window.scrollBy(0, step);
+            }}
+            const after = useElementScroll ? scrollRoot.scrollTop : window.scrollY;
             return {{
                 before,
-                after: window.scrollY,
-                moved: window.scrollY - before,
+                after,
+                moved: after - before,
                 step,
+                used_element_scroll: Boolean(useElementScroll),
             }};
         }}
         """
@@ -542,10 +808,9 @@ def collect_visible_posts(page, posts, processed_post_keys, resolved_preview_url
             print(f"   ⚠️ Error processing feed item {i}: {e}")
             continue
         post_key = extract_post_key(post_card, page.url)
-        dedupe_key = post_key or f"content:{content}"
-        if content and dedupe_key not in processed_post_keys:
+        if content and not post_is_duplicate(post_key, content, processed_post_keys):
             posts.append(content)
-            processed_post_keys.add(dedupe_key)
+            remember_post_dedupe(post_key, content, processed_post_keys)
             new_posts += 1
             print(f"   ✓ Post #{len(posts)} loaded")
             if MAX_POSTS is not None and len(posts) >= MAX_POSTS:
