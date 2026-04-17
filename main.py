@@ -11,6 +11,7 @@ GROUP_URL = "https://www.facebook.com/groups/YOUR_GROUP_ID_HERE"
 OUTPUT_FILE = "fb_posts_output.txt"
 STORAGE_STATE = "facebook_state.json"
 INCLUDE_POST_AUTHOR = False
+INCLUDE_POST_DATE = False
 MAX_SCROLLS = 30  # Set MAX_SCROLLS to None for unlimited scrolling.
 MAX_STAGNANT_SCROLLS = 10  # Used when MAX_POSTS or MAX_SCROLLS is unlimited.
 
@@ -89,6 +90,22 @@ AUTHOR_NON_PROFILE_PREFIXES = (
     "/sharer",
     "/story.php",
     "/watch",
+)
+DATE_METADATA_PREFIX = "Date: "
+DATE_CANDIDATE_SELECTORS = [
+    "a[target='_blank'][href]",
+    "a[href]",
+]
+MONTH_NAME_PATTERN = (
+    "January|February|March|April|May|June|July|August|September|October|November|December"
+)
+FULL_DATE_PATTERN = re.compile(
+    rf"^({MONTH_NAME_PATTERN})\s+(\d{{1,2}}),\s*(\d{{4}})$",
+    re.IGNORECASE,
+)
+RELATIVE_DATE_PATTERN = re.compile(
+    r"^(?:\d+\s*(?:s|m|min|h|d|w)|just now|now|today|yesterday)(?:\s+at\s+.+)?$",
+    re.IGNORECASE,
 )
 
 
@@ -400,9 +417,10 @@ def has_stable_post_key(post_key):
 
 
 def content_dedupe_key(content, prefix="content"):
-    if not content:
+    normalized_content = dedupe_identity_content(content)
+    if not normalized_content:
         return None
-    return f"{prefix}:{content}"
+    return f"{prefix}:{normalized_content}"
 
 
 def post_is_duplicate(post_key, content, processed_post_keys):
@@ -532,6 +550,27 @@ def normalize_inline_whitespace(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def dedupe_identity_content(content):
+    if not content:
+        return ""
+
+    lines = content.splitlines()
+    index = 0
+    metadata_prefixes = (AUTHOR_METADATA_PREFIX, DATE_METADATA_PREFIX)
+
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+        if any(stripped.startswith(prefix) for prefix in metadata_prefixes):
+            index += 1
+            continue
+        break
+
+    return "\n".join(lines[index:]).strip()
+
+
 def is_timestamp_like(text):
     return any(pattern.fullmatch(text) for pattern in AUTHOR_TIMESTAMP_PATTERNS)
 
@@ -622,6 +661,109 @@ def extract_post_author(post_card, page_url):
         candidate = try_candidate(fallback_links.nth(i))
         if candidate:
             return candidate
+
+    return None
+
+
+def normalize_post_date_text(text):
+    if not text:
+        return None
+
+    text = normalize_inline_whitespace(text).replace(" ,", ",")
+    text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)
+    text = re.sub(r"(\d),(\d{4})", r"\1, \2", text)
+    text = re.sub(r"\s+", " ", text).strip(" ·")
+
+    match = FULL_DATE_PATTERN.fullmatch(text)
+    if match:
+        month, day, year = match.groups()
+        return f"{month} {int(day)}, {year}"
+
+    if RELATIVE_DATE_PATTERN.fullmatch(text):
+        return text
+
+    return None
+
+
+def extract_positioned_text_row(locator):
+    try:
+        row_text = locator.evaluate(
+            """
+            (element) => {
+              const nodes = Array.from(element.querySelectorAll('span'))
+                .map((node) => {
+                  const text = (node.textContent || '').trim();
+                  if (!text || text.length !== 1) {
+                    return null;
+                  }
+                  const rect = node.getBoundingClientRect();
+                  if (!rect.width || !rect.height) {
+                    return null;
+                  }
+                  return {
+                    ch: text,
+                    x: Math.round(rect.left),
+                    y: Math.round(rect.top),
+                  };
+                })
+                .filter(Boolean);
+
+              if (!nodes.length) {
+                return '';
+              }
+
+              const minY = Math.min(...nodes.map((node) => node.y));
+              return nodes
+                .filter((node) => Math.abs(node.y - minY) <= 2)
+                .sort((a, b) => a.x - b.x)
+                .map((node) => node.ch)
+                .join('');
+            }
+            """
+        )
+    except Exception:
+        return ""
+
+    return normalize_inline_whitespace(row_text)
+
+
+def extract_post_date(post_card):
+    seen = set()
+
+    def try_candidate(locator):
+        href = safe_get_attribute(locator, "href")
+        if not href or not href.startswith("?"):
+            return None
+
+        target = safe_get_attribute(locator, "target")
+        if target != "_blank":
+            return None
+
+        candidate_texts = [
+            extract_positioned_text_row(locator),
+            safe_inner_text(locator),
+            safe_get_attribute(locator, "aria-label") or "",
+            safe_get_attribute(locator, "title") or "",
+        ]
+
+        for raw_text in candidate_texts:
+            normalized = normalize_post_date_text(raw_text)
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            return normalized
+
+        return None
+
+    for selector in DATE_CANDIDATE_SELECTORS:
+        candidates = post_card.locator(selector)
+        for i in range(min(candidates.count(), 12)):
+            candidate = try_candidate(candidates.nth(i))
+            if candidate:
+                return candidate
 
     return None
 
@@ -879,6 +1021,7 @@ def extract_post_content(post_card, page, resolved_preview_urls):
         page.wait_for_timeout(300)
 
     post_author = extract_post_author(post_card, page.url) if INCLUDE_POST_AUTHOR else None
+    post_date = extract_post_date(post_card) if INCLUDE_POST_DATE else None
     raw_message_text = get_message_text(post_card)
     quote_text = get_quote_text(post_card)
     external_links = collect_external_links(post_card, page, resolved_preview_urls)
@@ -894,6 +1037,8 @@ def extract_post_content(post_card, page, resolved_preview_urls):
     parts = []
     if post_author:
         parts.append(f"{AUTHOR_METADATA_PREFIX}{post_author}")
+    if post_date:
+        parts.append(f"{DATE_METADATA_PREFIX}{post_date}")
     if message_text:
         parts.append(message_text)
     if external_links:

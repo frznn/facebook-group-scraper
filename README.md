@@ -8,6 +8,7 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - Expands multiple `See more` labels, including `See more`, `Xem thêm`, `Meer weergeven`, `Ver más`, and `Mostra altro`
 - Expands `See original` where Facebook shows translated content
 - Can optionally prepend the posting user when Facebook exposes a reliable author link in the feed card
+- Can optionally prepend the post date when Facebook exposes a readable timestamp in the feed card header
 - Extracts outbound links from posts, including resolved preview links, preview titles when Facebook exposes them, and normalized YouTube URLs
 - Captures quote text from shared-link previews when the quote contains meaningful text
 - Captures emoji-only posts by reading accessible emoji labels from the DOM
@@ -57,6 +58,7 @@ python login_and_save_state.py
 - `MAX_STAGNANT_SCROLLS`: how many empty passes to tolerate before stopping an unlimited run
 - `OUTPUT_FILE`: where to write the extracted posts
 - `INCLUDE_POST_AUTHOR`: whether to prepend `Author: ...` when a post author can be identified
+- `INCLUDE_POST_DATE`: whether to prepend `Date: ...` when a post date can be identified
 
 ## Usage
 
@@ -77,6 +79,7 @@ The scraper writes plain-text output in this format:
 ```text
 --- POST 1 ---
 [Author: Example User if enabled]
+[Date: November 6, 2022 if enabled]
 
 [post text]
 
@@ -100,6 +103,7 @@ The current defaults in `main.py` are:
 | `OUTPUT_FILE` | Output file path. | `fb_posts_output.txt` |
 | `STORAGE_STATE` | Saved Playwright login state. | `facebook_state.json` |
 | `INCLUDE_POST_AUTHOR` | Prepend `Author: ...` when a reliable author link is found. | `False` |
+| `INCLUDE_POST_DATE` | Prepend `Date: ...` when a readable post date is found. | `False` |
 | `MAX_SCROLLS` | Maximum incremental scroll passes. Set to `None` for no scroll cap. | `30` |
 | `MAX_STAGNANT_SCROLLS` | Stop condition when an unlimited run stops finding new posts. | `10` |
 
@@ -110,6 +114,7 @@ The current defaults in `main.py` are:
 - Facebook changes its DOM often, so selectors may need updates over time.
 - Some preview links require opening a popup to resolve the final destination, which can slow long runs.
 - Post-author extraction is best-effort and only appears when `INCLUDE_POST_AUTHOR` is enabled and Facebook exposes a reliable author link in the feed card.
+- Post-date extraction is best-effort and only appears when `INCLUDE_POST_DATE` is enabled and Facebook exposes a readable timestamp in the feed card header.
 - Preview titles are best-effort and depend on Facebook exposing readable preview-card text in the feed DOM.
 - If Facebook does not expose a stable permalink for a feed item, the scraper falls back to the feed position for deduping within that run.
 
