@@ -9,6 +9,7 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - Expands `See original` where Facebook shows translated content
 - Can optionally prepend the posting user when Facebook exposes a reliable author link in the feed card
 - Can optionally prepend the post date when Facebook exposes a readable timestamp in the feed card header
+- Can render the scraped posts as plain text or Markdown
 - Extracts outbound links from posts, including resolved preview links, preview titles when Facebook exposes them, and normalized YouTube URLs
 - Captures quote text from shared-link previews when the quote contains meaningful text
 - Captures emoji-only posts by reading accessible emoji labels from the DOM
@@ -57,6 +58,7 @@ python login_and_save_state.py
 - `MAX_SCROLLS`: how many scroll steps to allow, or `None` for no scroll cap
 - `MAX_STAGNANT_SCROLLS`: how many empty passes to tolerate before stopping an unlimited run
 - `OUTPUT_FILE`: where to write the extracted posts
+- `OUTPUT_FORMAT`: either `text` or `markdown`
 - `INCLUDE_POST_AUTHOR`: whether to prepend `Author: ...` when a post author can be identified
 - `INCLUDE_POST_DATE`: whether to prepend `Date: ...` when a post date can be identified
 
@@ -74,7 +76,12 @@ Then run the scraper:
 python main.py
 ```
 
-The scraper writes plain-text output in this format:
+The scraper writes output according to `OUTPUT_FORMAT`:
+
+- `text`: the existing `--- POST N ---` plain-text blocks
+- `markdown`: heading-based output that reads cleanly in editors and GitHub
+
+The default `text` format looks like this:
 
 ```text
 --- POST 1 ---
@@ -90,7 +97,7 @@ https://example.com/page
 ...
 ```
 
-When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL.
+When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL in text mode and uses it as the clickable link label in Markdown mode.
 
 ## Current Configuration
 
@@ -101,6 +108,7 @@ The current defaults in `main.py` are:
 | `MAX_POSTS` | Maximum posts to save. Set to `None` for no post cap. | `50` |
 | `GROUP_URL` | Facebook group URL to scrape. | `YOUR_GROUP_ID_HERE` |
 | `OUTPUT_FILE` | Output file path. | `fb_posts_output.txt` |
+| `OUTPUT_FORMAT` | Output renderer to use. | `text` |
 | `STORAGE_STATE` | Saved Playwright login state. | `facebook_state.json` |
 | `INCLUDE_POST_AUTHOR` | Prepend `Author: ...` when a reliable author link is found. | `False` |
 | `INCLUDE_POST_DATE` | Prepend `Date: ...` when a readable post date is found. | `False` |
@@ -110,7 +118,8 @@ The current defaults in `main.py` are:
 ## Notes And Limitations
 
 - The scraper still uses in-file configuration rather than CLI arguments.
-- Output is plain text, not JSON or CSV.
+- Output configuration is still set in `main.py`, not via CLI arguments.
+- The scraper currently supports `text` and `markdown` output.
 - Facebook changes its DOM often, so selectors may need updates over time.
 - Some preview links require opening a popup to resolve the final destination, which can slow long runs.
 - Post-author extraction is best-effort and only appears when `INCLUDE_POST_AUTHOR` is enabled and Facebook exposes a reliable author link in the feed card.
