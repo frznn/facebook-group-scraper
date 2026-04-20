@@ -3,12 +3,22 @@ import time
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlunparse
 
 from playwright.sync_api import sync_playwright
+from output_formats import (
+    AUTHOR_METADATA_PREFIX,
+    DATE_METADATA_PREFIX,
+    ExternalLink,
+    ScrapedPost,
+    normalize_output_format,
+    post_identity_text,
+    render_output,
+)
 
 MAX_POSTS = 50
 # Set MAX_POSTS to None to scrape all posts that the feed can still load.
 # ⚠️ THAY ĐỔI URL NÀY THÀNH URL NHÓM FACEBOOK CỦA BẠN
 GROUP_URL = "https://www.facebook.com/groups/YOUR_GROUP_ID_HERE"
 OUTPUT_FILE = "fb_posts_output.txt"
+OUTPUT_FORMAT = "text"
 STORAGE_STATE = "facebook_state.json"
 INCLUDE_POST_AUTHOR = False
 INCLUDE_POST_DATE = False
@@ -57,7 +67,6 @@ AUTHOR_TIMESTAMP_PATTERNS = (
     re.compile(r"^\d+\s*(?:s|m|min|h|d|w)$", re.IGNORECASE),
     re.compile(r"^(?:today|yesterday)(?:\s+at\s+.+)?$", re.IGNORECASE),
 )
-AUTHOR_METADATA_PREFIX = "Author: "
 AUTHOR_CANDIDATE_SELECTORS = [
     "[role='heading'] a[href]",
     "h2 a[href]",
@@ -91,7 +100,6 @@ AUTHOR_NON_PROFILE_PREFIXES = (
     "/story.php",
     "/watch",
 )
-DATE_METADATA_PREFIX = "Date: "
 DATE_CANDIDATE_SELECTORS = [
     "a[target='_blank'][href]",
     "a[href]",
@@ -417,7 +425,7 @@ def has_stable_post_key(post_key):
 
 
 def content_dedupe_key(content, prefix="content"):
-    normalized_content = dedupe_identity_content(content)
+    normalized_content = dedupe_identity_value(content)
     if not normalized_content:
         return None
     return f"{prefix}:{normalized_content}"
@@ -569,6 +577,12 @@ def dedupe_identity_content(content):
         break
 
     return "\n".join(lines[index:]).strip()
+
+
+def dedupe_identity_value(content):
+    if isinstance(content, ScrapedPost):
+        return post_identity_text(content)
+    return dedupe_identity_content(content)
 
 
 def is_timestamp_like(text):
@@ -1005,17 +1019,6 @@ def collect_external_links(post_card, page, resolved_preview_urls):
     return links
 
 
-def format_external_links(external_links):
-    separator = "\n\n" if any(link.get("title") for link in external_links) else "\n"
-    rendered_links = []
-    for link in external_links:
-        if link.get("title"):
-            rendered_links.append(f"{link['title']}\n{link['url']}")
-        else:
-            rendered_links.append(link["url"])
-    return separator.join(rendered_links)
-
-
 def extract_post_content(post_card, page, resolved_preview_urls):
     if expand_post_card(post_card):
         page.wait_for_timeout(300)
@@ -1034,17 +1037,14 @@ def extract_post_content(post_card, page, resolved_preview_urls):
     if not message_text and not external_urls:
         return None
 
-    parts = []
-    if post_author:
-        parts.append(f"{AUTHOR_METADATA_PREFIX}{post_author}")
-    if post_date:
-        parts.append(f"{DATE_METADATA_PREFIX}{post_date}")
-    if message_text:
-        parts.append(message_text)
-    if external_links:
-        parts.append(format_external_links(external_links))
-
-    return "\n\n".join(parts).strip()
+    return ScrapedPost(
+        author=post_author,
+        date=post_date,
+        message=message_text or "",
+        external_links=[
+            ExternalLink(url=link["url"], title=link.get("title")) for link in external_links
+        ],
+    )
 
 
 def scroll_feed(page):
@@ -1103,6 +1103,8 @@ def collect_visible_posts(page, posts, processed_post_keys, resolved_preview_url
 
 
 def run_scraper():
+    normalized_output_format = normalize_output_format(OUTPUT_FORMAT)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         ctx = browser.new_context(storage_state=STORAGE_STATE)
@@ -1174,11 +1176,10 @@ def run_scraper():
         print(f"✅ Total {len(posts)} posts found. Saving…")
         posts_to_write = posts if MAX_POSTS is None else posts[:MAX_POSTS]
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            for idx, ptext in enumerate(posts_to_write, 1):
-                f.write(f"--- POST {idx} ---\n{ptext}\n\n")
+            f.write(render_output(posts_to_write, normalized_output_format))
 
         browser.close()
-        print(f"📁 Done! Check {OUTPUT_FILE}")
+        print(f"📁 Done! Check {OUTPUT_FILE} ({normalized_output_format})")
 
 
 if __name__ == "__main__":
