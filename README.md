@@ -7,8 +7,8 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - Extracts post text from Facebook group feeds using a saved login session
 - Expands multiple `See more` labels, including `See more`, `Xem thêm`, `Meer weergeven`, `Ver más`, and `Mostra altro`
 - Expands `See original` where Facebook shows translated content
-- Can optionally prepend the posting user when Facebook exposes a reliable author link in the feed card
-- Can optionally prepend the post date when Facebook exposes a readable timestamp in the feed card header
+- Prepends the posting user by default when Facebook exposes a reliable author link in the feed card
+- Prepends the post date by default when Facebook exposes a readable timestamp in the feed card header
 - Can render the scraped posts as plain text, Markdown, HTML, JSON, or JSONL
 - Extracts outbound links from posts, including resolved preview links, preview titles when Facebook exposes them, and normalized YouTube URLs
 - Captures quote text from shared-link previews when the quote contains meaningful text
@@ -76,7 +76,7 @@ Then run the scraper:
 python main.py
 ```
 
-The scraper writes output according to `OUTPUT_FORMAT`:
+The scraper writes output according to `OUTPUT_FORMAT`. Supported formats are:
 
 - `text`: the existing `--- POST N ---` plain-text blocks
 - `markdown`: heading-based output that reads cleanly in editors and GitHub
@@ -96,8 +96,8 @@ The default `text` format looks like this:
 
 ```text
 --- POST 1 ---
-[Author: Example User if enabled]
-[Date: November 6, 2022 if enabled]
+[Author: Example User when available]
+[Date: November 6, 2022 when available]
 
 [post text]
 
@@ -110,6 +110,10 @@ https://example.com/page
 
 When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL in text mode, carries the same title into the Markdown and HTML link rendering, and keeps it in the structured `links` entries for JSON and JSONL while leaving `message` URL-only.
 
+## Migration Note
+
+- `INCLUDE_POST_AUTHOR` and `INCLUDE_POST_DATE` now default to `True`. If you want the older plain-body-only output, set either or both back to `False` in `main.py`.
+
 ## Current Configuration
 
 The current defaults in `main.py` are:
@@ -121,8 +125,8 @@ The current defaults in `main.py` are:
 | `OUTPUT_FILE` | Output file path. | `fb_posts_output.txt` |
 | `OUTPUT_FORMAT` | Output renderer to use. | `text` |
 | `STORAGE_STATE` | Saved Playwright login state. | `facebook_state.json` |
-| `INCLUDE_POST_AUTHOR` | Prepend `Author: ...` when a reliable author link is found. | `False` |
-| `INCLUDE_POST_DATE` | Prepend `Date: ...` when a readable post date is found. | `False` |
+| `INCLUDE_POST_AUTHOR` | Prepend `Author: ...` when a reliable author link is found. Set to `False` to suppress it. | `True` |
+| `INCLUDE_POST_DATE` | Prepend `Date: ...` when a readable post date is found. Set to `False` to suppress it. | `True` |
 | `MAX_SCROLLS` | Maximum incremental scroll passes. Set to `None` for no scroll cap. | `30` |
 | `MAX_STAGNANT_SCROLLS` | Stop condition when an unlimited run stops finding new posts. | `10` |
 
@@ -133,8 +137,8 @@ The current defaults in `main.py` are:
 - The scraper now supports `text`, `markdown`, `html`, `json`, and `jsonl` output, but does not yet ship separate templates or themes.
 - Facebook changes its DOM often, so selectors may need updates over time.
 - Some preview links require opening a popup to resolve the final destination, which can slow long runs.
-- Post-author extraction is best-effort and only appears when `INCLUDE_POST_AUTHOR` is enabled and Facebook exposes a reliable author link in the feed card.
-- Post-date extraction is best-effort and only appears when `INCLUDE_POST_DATE` is enabled and Facebook exposes a readable timestamp in the feed card header.
+- Post-author extraction is best-effort and appears when `INCLUDE_POST_AUTHOR` is enabled and Facebook exposes a reliable author link in the feed card.
+- Post-date extraction is best-effort and appears when `INCLUDE_POST_DATE` is enabled and Facebook exposes a readable timestamp in the feed card header.
 - Preview titles are best-effort and depend on Facebook exposing readable preview-card text in the feed DOM.
 - If Facebook does not expose a stable permalink for a feed item, the scraper falls back to the feed position for deduping within that run.
 

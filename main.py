@@ -20,8 +20,9 @@ GROUP_URL = "https://www.facebook.com/groups/YOUR_GROUP_ID_HERE"
 OUTPUT_FILE = "fb_posts_output.txt"
 OUTPUT_FORMAT = "text"
 STORAGE_STATE = "facebook_state.json"
-INCLUDE_POST_AUTHOR = False
-INCLUDE_POST_DATE = False
+# Behavior change: author/date metadata are on by default when available.
+INCLUDE_POST_AUTHOR = True
+INCLUDE_POST_DATE = True
 MAX_SCROLLS = 30  # Set MAX_SCROLLS to None for unlimited scrolling.
 MAX_STAGNANT_SCROLLS = 10  # Used when MAX_POSTS or MAX_SCROLLS is unlimited.
 
