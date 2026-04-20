@@ -1,12 +1,16 @@
+from html import escape
 from dataclasses import dataclass, field
 
 
 AUTHOR_METADATA_PREFIX = "Author: "
 DATE_METADATA_PREFIX = "Date: "
-SUPPORTED_OUTPUT_FORMATS = ("text", "markdown")
+
+
+SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "html")
 OUTPUT_FORMAT_ALIASES = {
     "txt": "text",
     "md": "markdown",
+    "htm": "html",
 }
 
 
@@ -113,9 +117,205 @@ def render_markdown(posts):
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_html(posts):
+    cards = []
+    nav_links = []
+
+    for index, post in enumerate(posts, 1):
+        nav_links.append(f'<a href="#post-{index}">#{index}</a>')
+
+        metadata = []
+        if post.author:
+            metadata.append(
+                f'<span class="meta-pill"><span class="meta-label">Author</span>{escape(post.author)}</span>'
+            )
+        if post.date:
+            metadata.append(
+                f'<span class="meta-pill"><span class="meta-label">Date</span>{escape(post.date)}</span>'
+            )
+
+        message_html = ""
+        if post.message:
+            paragraphs = []
+            for paragraph in post.message.split("\n\n"):
+                escaped = escape(paragraph).replace("\n", "<br>\n")
+                paragraphs.append(f"<p>{escaped}</p>")
+            message_html = f'<div class="post-message">{"".join(paragraphs)}</div>'
+
+        links_html = ""
+        if post.external_links:
+            items = []
+            for link in post.external_links:
+                label = escape(link.title or link.url)
+                items.append(
+                    f'<li><a href="{escape(link.url, quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a></li>'
+                )
+            links_html = f'<ul class="post-links">{"".join(items)}</ul>'
+
+        cards.append(
+            "\n".join(
+                [
+                    f'<article class="post-card" id="post-{index}">',
+                    f'  <h2 class="post-title">Post {index}</h2>',
+                    f'  <div class="post-meta">{"".join(metadata)}</div>' if metadata else "",
+                    f"  {message_html}" if message_html else "",
+                    f"  {links_html}" if links_html else "",
+                    "</article>",
+                ]
+            )
+        )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Facebook Group Scrape</title>
+  <style>
+    :root {{
+      --bg: #f4efe6;
+      --surface: #fffdf8;
+      --surface-strong: #f0e3cd;
+      --text: #1d1b18;
+      --muted: #6a6258;
+      --line: #d9ccb7;
+      --accent: #8b3a2b;
+      --accent-soft: #f6d9c6;
+      --shadow: 0 16px 50px rgba(85, 64, 39, 0.12);
+    }}
+
+    * {{
+      box-sizing: border-box;
+    }}
+
+    body {{
+      margin: 0;
+      background:
+        radial-gradient(circle at top, rgba(139, 58, 43, 0.08), transparent 28rem),
+        linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      color: var(--text);
+      font: 16px/1.6 Georgia, "Times New Roman", serif;
+    }}
+
+    main {{
+      width: min(1100px, calc(100vw - 2rem));
+      margin: 0 auto;
+      padding: 2.5rem 0 4rem;
+    }}
+
+    .page-header {{
+      margin-bottom: 1.5rem;
+    }}
+
+    h1 {{
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+    }}
+
+    .subtitle {{
+      margin: 0.75rem 0 0;
+      color: var(--muted);
+    }}
+
+    .post-nav {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1.5rem 0 2rem;
+    }}
+
+    .post-nav a,
+    .post-links a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+
+    .post-nav a {{
+      padding: 0.3rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 253, 248, 0.82);
+    }}
+
+    .posts {{
+      display: grid;
+      gap: 1rem;
+    }}
+
+    .post-card {{
+      padding: 1.4rem 1.4rem 1.2rem;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: color-mix(in srgb, var(--surface) 92%, white 8%);
+      box-shadow: var(--shadow);
+    }}
+
+    .post-title {{
+      margin: 0 0 0.8rem;
+      font-size: 1.3rem;
+    }}
+
+    .post-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      margin-bottom: 1rem;
+    }}
+
+    .meta-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.32rem 0.7rem;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--text);
+      font-size: 0.92rem;
+    }}
+
+    .meta-label {{
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+    }}
+
+    .post-message p {{
+      margin: 0 0 0.95rem;
+    }}
+
+    .post-message p:last-child {{
+      margin-bottom: 0;
+    }}
+
+    .post-links {{
+      margin: 1rem 0 0;
+      padding-left: 1.25rem;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <h1>Facebook Group Scrape</h1>
+      <p class="subtitle">{len(posts)} posts captured.</p>
+    </header>
+    <nav class="post-nav">{''.join(nav_links)}</nav>
+    <section class="posts">
+      {''.join(cards)}
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
 def render_output(posts, output_format):
     renderers = {
         "text": render_text,
         "markdown": render_markdown,
+        "html": render_html,
     }
     return renderers[output_format](posts)
