@@ -1,16 +1,19 @@
 from html import escape
+import json
 from dataclasses import dataclass, field
+from dataclasses import asdict
 
 
 AUTHOR_METADATA_PREFIX = "Author: "
 DATE_METADATA_PREFIX = "Date: "
 
 
-SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "html")
+SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "html", "json", "jsonl")
 OUTPUT_FORMAT_ALIASES = {
     "txt": "text",
     "md": "markdown",
     "htm": "html",
+    "ndjson": "jsonl",
 }
 
 
@@ -52,6 +55,10 @@ def render_external_links_text(external_links):
         else:
             rendered_links.append(link.url)
     return separator.join(rendered_links)
+
+
+def render_external_link_urls(external_links):
+    return "\n".join(link.url for link in external_links)
 
 
 def post_identity_text(post):
@@ -312,10 +319,39 @@ def render_html(posts):
 """
 
 
+def post_to_dict(post, index):
+    return {
+        "index": index,
+        "author": post.author,
+        "date": post.date,
+        "message": "\n\n".join(
+            part
+            for part in [post.message, render_external_link_urls(post.external_links)]
+            if part
+        ).strip(),
+        "links": [asdict(link) for link in post.external_links],
+    }
+
+
+def render_json(posts):
+    payload = [post_to_dict(post, index) for index, post in enumerate(posts, 1)]
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def render_jsonl(posts):
+    lines = [
+        json.dumps(post_to_dict(post, index), ensure_ascii=False)
+        for index, post in enumerate(posts, 1)
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_output(posts, output_format):
     renderers = {
         "text": render_text,
         "markdown": render_markdown,
         "html": render_html,
+        "json": render_json,
+        "jsonl": render_jsonl,
     }
     return renderers[output_format](posts)

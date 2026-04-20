@@ -9,7 +9,7 @@ This fork keeps the original Playwright-based Facebook group scraper, but expand
 - Expands `See original` where Facebook shows translated content
 - Can optionally prepend the posting user when Facebook exposes a reliable author link in the feed card
 - Can optionally prepend the post date when Facebook exposes a readable timestamp in the feed card header
-- Can render the scraped posts as plain text, Markdown, or HTML
+- Can render the scraped posts as plain text, Markdown, HTML, JSON, or JSONL
 - Extracts outbound links from posts, including resolved preview links, preview titles when Facebook exposes them, and normalized YouTube URLs
 - Captures quote text from shared-link previews when the quote contains meaningful text
 - Captures emoji-only posts by reading accessible emoji labels from the DOM
@@ -58,7 +58,7 @@ python login_and_save_state.py
 - `MAX_SCROLLS`: how many scroll steps to allow, or `None` for no scroll cap
 - `MAX_STAGNANT_SCROLLS`: how many empty passes to tolerate before stopping an unlimited run
 - `OUTPUT_FILE`: where to write the extracted posts
-- `OUTPUT_FORMAT`: one of `text`, `markdown`, or `html`
+- `OUTPUT_FORMAT`: one of `text`, `markdown`, `html`, `json`, or `jsonl`
 - `INCLUDE_POST_AUTHOR`: whether to prepend `Author: ...` when a post author can be identified
 - `INCLUDE_POST_DATE`: whether to prepend `Date: ...` when a post date can be identified
 
@@ -81,6 +81,16 @@ The scraper writes output according to `OUTPUT_FORMAT`:
 - `text`: the existing `--- POST N ---` plain-text blocks
 - `markdown`: heading-based output that reads cleanly in editors and GitHub
 - `html`: a styled single-file page with per-post cards and jump links
+- `json`: one structured JSON array for integrations or downstream transforms
+- `jsonl`: one JSON object per line, which is useful for pipelines and large runs
+
+For `json` and `jsonl`, each post object includes:
+
+- `author`
+- `date`
+- `message`: the post body plus any appended outbound URLs, without duplicating preview titles
+- `links`: structured link entries with `url` and optional `title`
+- `index`
 
 The default `text` format looks like this:
 
@@ -98,7 +108,7 @@ https://example.com/page
 ...
 ```
 
-When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL in text mode and uses it as the clickable link label in Markdown and HTML mode.
+When Facebook exposes a shared-preview title, the scraper writes that title on the line above the resolved outbound URL in text mode, carries the same title into the Markdown and HTML link rendering, and keeps it in the structured `links` entries for JSON and JSONL while leaving `message` URL-only.
 
 ## Current Configuration
 
@@ -120,7 +130,7 @@ The current defaults in `main.py` are:
 
 - The scraper still uses in-file configuration rather than CLI arguments.
 - Output configuration is still set in `main.py`, not via CLI arguments.
-- The scraper currently supports `text`, `markdown`, and `html` output.
+- The scraper now supports `text`, `markdown`, `html`, `json`, and `jsonl` output, but does not yet ship separate templates or themes.
 - Facebook changes its DOM often, so selectors may need updates over time.
 - Some preview links require opening a popup to resolve the final destination, which can slow long runs.
 - Post-author extraction is best-effort and only appears when `INCLUDE_POST_AUTHOR` is enabled and Facebook exposes a reliable author link in the feed card.
