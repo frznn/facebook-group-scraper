@@ -1,13 +1,10 @@
+from dataclasses import asdict, dataclass, field
 from html import escape
 import json
-from dataclasses import dataclass, field
-from dataclasses import asdict
 
 
 AUTHOR_METADATA_PREFIX = "Author: "
 DATE_METADATA_PREFIX = "Date: "
-
-
 SUPPORTED_OUTPUT_FORMATS = ("text", "markdown", "html", "json", "jsonl")
 OUTPUT_FORMAT_ALIASES = {
     "txt": "text",
@@ -320,7 +317,7 @@ def render_html(posts):
 
 
 def post_to_dict(post, index):
-    return {
+    data = {
         "index": index,
         "author": post.author,
         "date": post.date,
@@ -331,6 +328,7 @@ def post_to_dict(post, index):
         ).strip(),
         "links": [asdict(link) for link in post.external_links],
     }
+    return data
 
 
 def render_json(posts):
